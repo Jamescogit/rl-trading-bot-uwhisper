@@ -10,6 +10,13 @@ import time
 from collections import deque
 import hashlib
 
+# Auto-refresh setup
+try:
+    from streamlit_autorefresh import st_autorefresh
+    refresh_counter = st_autorefresh(interval=10_000, limit=None, key="auto_refresh")
+except ImportError:
+    refresh_counter = 0
+
 # Page configuration
 st.set_page_config(
     page_title="RL Trading Bot - uWhisper",
@@ -226,33 +233,43 @@ if check_password():
             color: #ff9800;
         }
         
-        .signal-details {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-top: 1.5rem;
+        /* Data Tables */
+        .data-card {
+            background: white;
+            border-radius: 20px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 20px 27px 0 rgba(0,0,0,.05);
+            border: none;
         }
         
-        .signal-detail {
-            padding: 1rem;
-            background: rgba(255, 255, 255, 0.7);
-            border-radius: 12px;
-            border: 1px solid rgba(0, 0, 0, 0.05);
-        }
-        
-        .signal-detail-title {
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: #67748e;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 0.25rem;
-        }
-        
-        .signal-detail-value {
-            font-size: 1.1rem;
+        .data-title {
+            font-size: 1.25rem;
             font-weight: 700;
             color: #344767;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        /* Chat Card */
+        .chat-card {
+            background: white;
+            border-radius: 20px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 20px 27px 0 rgba(0,0,0,.05);
+            border: none;
+            border-left: 5px solid #2152ff;
+        }
+        
+        .bot-response {
+            background: linear-gradient(135deg, rgba(33, 82, 255, 0.05) 0%, rgba(33, 212, 253, 0.05) 100%);
+            border-radius: 12px;
+            padding: 1rem;
+            margin-top: 0.5rem;
+            border-left: 3px solid #2152ff;
         }
         
         /* Performance Card */
@@ -407,27 +424,162 @@ if check_password():
     # Private access indicator
     st.markdown('<div class="private-badge">🔒 PRIVATE ACCESS</div>', unsafe_allow_html=True)
 
-    # Reinforcement Learning Scalping Bot
+    # Initialize session state for logs and signals
+    if "signal_log" not in st.session_state:
+        st.session_state.signal_log = []
+    if "last_signal" not in st.session_state:
+        st.session_state.last_signal = "HOLD"
+
+    # Technical Indicators Helper Functions
+    def add_indicators(df):
+        """Add technical indicators to the dataframe"""
+        if df.empty or len(df) < 50:
+            return df
+            
+        # EMAs
+        df["ema9"] = df["close"].ewm(span=9, adjust=False).mean()
+        df["ema55"] = df["close"].ewm(span=55, adjust=False).mean()
+        df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
+        
+        # RSI
+        delta = df["close"].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs = avg_gain / (avg_loss + 1e-8)
+        df["rsi14"] = 100 - (100 / (1 + rs))
+        
+        # MACD
+        ema12 = df["close"].ewm(span=12, adjust=False).mean()
+        ema26 = df["close"].ewm(span=26, adjust=False).mean()
+        df["macd"] = ema12 - ema26
+        df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+        df["macd_hist"] = df["macd"] - df["macd_signal"]
+        
+        return df.fillna(method="bfill").fillna(method="ffill")
+
+    # Trading Environment
+    class TradingEnv:
+        def __init__(self, df, window_size=10):
+            self.df = df.reset_index(drop=True)
+            self.window_size = window_size
+            self.reset()
+            
+        def reset(self):
+            self.current_step = self.window_size
+            self.position = 0
+            self.entry_price = None
+            self.total_profit = 0
+            self.total_trades = 0
+            self.wins = 0
+            self.done = False
+            return self._get_state()
+            
+        def _get_state(self):
+            if self.current_step < self.window_size:
+                return np.zeros(12)
+                
+            window = self.df.iloc[self.current_step-self.window_size:self.current_step]
+            close_prices = window["close"].values
+            high_prices = window["high"].values
+            low_prices = window["low"].values
+            volumes = window["volume"].values
+            
+            # Calculate features
+            price_changes = np.diff(close_prices[-5:]) / close_prices[-5] if len(close_prices) >= 5 else [0]
+            volatility = np.std(close_prices[-5:]) / np.mean(close_prices[-5:]) if len(close_prices) >= 5 else 0
+            volume_ratio = volumes[-1] / np.mean(volumes) if np.mean(volumes) > 0 else 1
+            
+            sma5 = np.mean(close_prices[-5:])
+            sma10 = np.mean(close_prices)
+            price_position = (close_prices[-1] - sma5) / sma5 if sma5 > 0 else 0
+            momentum = (close_prices[-1] - close_prices[-3]) / close_prices[-3] if len(close_prices) >= 3 else 0
+            
+            support = np.min(low_prices)
+            resistance = np.max(high_prices)
+            support_distance = (close_prices[-1] - support) / close_prices[-1] if close_prices[-1] > 0 else 0
+            resistance_distance = (resistance - close_prices[-1]) / close_prices[-1] if close_prices[-1] > 0 else 0
+            
+            up_movement = 1 if close_prices[-1] > close_prices[-2] else 0
+            
+            # Technical indicators
+            rsi = window["rsi14"].iloc[-1] if "rsi14" in window.columns else 50
+            macd_hist = window["macd_hist"].iloc[-1] if "macd_hist" in window.columns else 0
+            
+            state = np.array([
+                price_changes[-1] if len(price_changes) > 0 else 0,
+                volatility, volume_ratio, price_position, momentum,
+                support_distance, resistance_distance, up_movement,
+                (sma5 - sma10) / sma10 if sma10 > 0 else 0,
+                (high_prices[-1] - low_prices[-1]) / close_prices[-1] if close_prices[-1] > 0 else 0,
+                rsi / 100.0, macd_hist
+            ])
+            
+            return np.nan_to_num(state)
+            
+        def step(self, action):
+            current_price = self.df.at[self.current_step, "close"]
+            reward = 0
+            
+            # Execute action
+            if action == 1 and self.position != 1:  # Buy
+                self.position = 1
+                self.entry_price = current_price
+                reward -= 0.02  # Transaction cost
+            elif action == 2 and self.position != -1:  # Sell
+                self.position = -1
+                self.entry_price = current_price
+                reward -= 0.02  # Transaction cost
+                
+            # Calculate profit/loss
+            if self.position != 0 and self.entry_price is not None:
+                price_diff = (current_price - self.entry_price) * self.position
+                reward += price_diff * 1000 - 0.001  # Scaled reward
+                
+                # Exit conditions
+                if abs(price_diff) >= 0.005 or self.current_step % 30 == 0:
+                    profit_percent = price_diff / self.entry_price * 100 - 0.02
+                    self.total_profit += profit_percent
+                    self.total_trades += 1
+                    
+                    if profit_percent > 0:
+                        self.wins += 1
+                        reward += 0.1
+                    else:
+                        reward -= 0.1
+                        
+                    self.position = 0
+                    self.entry_price = None
+                    
+            self.current_step += 1
+            if self.current_step >= len(self.df) - 1:
+                self.done = True
+                
+            return self._get_state(), reward, self.done, False, {
+                "profit": self.total_profit,
+                "trades": self.total_trades,
+                "win_rate": self.wins / self.total_trades if self.total_trades > 0 else 0
+            }
+
+    # Enhanced RL Scalping Bot
     class ScalpingRLBot:
-        def __init__(self, symbol="XAUUSD"):
-            self.symbol = symbol
-            self.state_size = 10
-            self.action_size = 3  # 0: Hold, 1: Buy, 2: Sell
-            self.memory = deque(maxlen=2000)
-            self.learning_rate = 0.001
-            self.gamma = 0.95
+        def __init__(self):
+            self.state_size = 12
+            self.action_size = 3  # Hold, Buy, Sell
             self.epsilon = 1.0
             self.epsilon_min = 0.01
             self.epsilon_decay = 0.995
-            self.model_weights = self.initialize_model()
+            self.gamma = 0.95
+            self.learning_rate = 0.001
+            self._init_model()
             self.position = 0
-            self.entry_price = 0
+            self.entry_price = None
             self.trades_history = []
-            self.total_profit = 0
-            self.win_rate = 0
             
-        def initialize_model(self):
-            return {
+        def _init_model(self):
+            """Initialize neural network weights"""
+            self.model = {
                 'layer1': np.random.randn(self.state_size, 24) * 0.1,
                 'bias1': np.zeros((1, 24)),
                 'layer2': np.random.randn(24, 24) * 0.1,
@@ -435,229 +587,162 @@ if check_password():
                 'layer3': np.random.randn(24, self.action_size) * 0.1,
                 'bias3': np.zeros((1, self.action_size))
             }
-        
-        def create_state(self, df, index):
-            if index < 10:
-                return np.zeros(self.state_size)
             
-            close_prices = df['close'].iloc[index-10:index].values
-            high_prices = df['high'].iloc[index-10:index].values
-            low_prices = df['low'].iloc[index-10:index].values
-            volumes = df['volume'].iloc[index-10:index].values
-            
-            price_changes = np.diff(close_prices[-5:]) / close_prices[-5]
-            volatility = np.std(close_prices[-5:]) / np.mean(close_prices[-5:])
-            volume_ratio = volumes[-1] / np.mean(volumes) if np.mean(volumes) > 0 else 1
-            
-            sma_5 = np.mean(close_prices[-5:])
-            sma_10 = np.mean(close_prices)
-            price_position = (close_prices[-1] - sma_5) / sma_5
-            momentum = (close_prices[-1] - close_prices[-3]) / close_prices[-3]
-            
-            support = np.min(low_prices)
-            resistance = np.max(high_prices)
-            support_distance = (close_prices[-1] - support) / close_prices[-1]
-            resistance_distance = (resistance - close_prices[-1]) / close_prices[-1]
-            
-            state = np.array([
-                price_changes[-1] if len(price_changes) > 0 else 0,
-                volatility,
-                volume_ratio,
-                price_position,
-                momentum,
-                support_distance,
-                resistance_distance,
-                (sma_5 - sma_10) / sma_10,
-                (high_prices[-1] - low_prices[-1]) / close_prices[-1],
-                1 if close_prices[-1] > close_prices[-2] else 0
-            ])
-            
-            return np.nan_to_num(state)
-        
-        def predict_action(self, state):
-            z1 = np.dot(state.reshape(1, -1), self.model_weights['layer1']) + self.model_weights['bias1']
+        def predict(self, state):
+            """Forward pass through neural network"""
+            z1 = state.reshape(1, -1) @ self.model['layer1'] + self.model['bias1']
             a1 = np.tanh(z1)
-            
-            z2 = np.dot(a1, self.model_weights['layer2']) + self.model_weights['bias2']
+            z2 = a1 @ self.model['layer2'] + self.model['bias2']
             a2 = np.tanh(z2)
+            z3 = a2 @ self.model['layer3'] + self.model['bias3']
+            return z3.flatten(), (z1, a1, z2, a2)
             
-            z3 = np.dot(a2, self.model_weights['layer3']) + self.model_weights['bias3']
-            q_values = z3
+        def get_signals(self, df):
+            """Generate trading signals"""
+            # 30% exploration for better learning
+            if np.random.rand() < 0.3:
+                action = "BUY" if np.random.rand() < 0.5 else "SELL"
+                confidence = np.random.uniform(0.4, 0.7)
+                return action, confidence
+                
+            # RL-based decision
+            env = TradingEnv(df)
+            state = env._get_state()
+            q_values, _ = self.predict(state)
             
-            return q_values[0], a2
-        
-        def get_scalping_signals(self, df):
-            if len(df) < 15:
-                return {"action": "HOLD", "confidence": 0, "reason": "Insufficient data"}
-            
-            current_index = len(df) - 1
-            state = self.create_state(df, current_index)
-            q_values, _ = self.predict_action(state)
-            
-            if np.random.random() <= self.epsilon:
-                action = np.random.choice(self.action_size)
+            if np.random.rand() < self.epsilon:
+                action_idx = np.random.choice(self.action_size)
                 confidence = 0.3
             else:
-                action = np.argmax(q_values)
-                confidence = min(0.9, abs(q_values[action]) / (np.sum(np.abs(q_values)) + 1e-8))
-            
-            current_price = df['close'].iloc[-1]
-            prev_price = df['close'].iloc[-2]
-            price_change = (current_price - prev_price) / prev_price * 100
-            
+                action_idx = np.argmax(q_values)
+                confidence = min(0.9, abs(q_values[action_idx]) / (np.sum(np.abs(q_values)) + 1e-8))
+                
             action_map = {0: "HOLD", 1: "BUY", 2: "SELL"}
-            signal_action = action_map[action]
+            action = action_map[action_idx]
             
-            volatility = np.std(df['close'].tail(10)) / np.mean(df['close'].tail(10))
-            volume_spike = df['volume'].iloc[-1] > df['volume'].tail(10).mean() * 1.5
-            momentum = "UP" if price_change > 0.01 else "DOWN" if price_change < -0.01 else "FLAT"
+            return action, confidence
             
-            reasons = []
-            if signal_action == "BUY":
-                if price_change > 0:
-                    reasons.append("Bullish momentum detected")
-                if volume_spike:
-                    reasons.append("Volume spike confirmation")
-                if volatility > 0.005:
-                    reasons.append("High volatility scalping opportunity")
-                reasons.append(f"RL model confidence: {confidence:.1%}")
-                
-            elif signal_action == "SELL":
-                if price_change < 0:
-                    reasons.append("Bearish momentum detected")
-                if volume_spike:
-                    reasons.append("Volume spike on decline")
-                if volatility > 0.005:
-                    reasons.append("High volatility short opportunity")
-                reasons.append(f"RL model confidence: {confidence:.1%}")
-                
-            else:
-                reasons.append("No clear scalping opportunity")
-                reasons.append(f"Low volatility: {volatility:.3f}")
-                reasons.append("Waiting for better setup")
+        def simulate_trade(self, df, action, confidence):
+            """Simulate trade execution"""
+            current_price = df["close"].iloc[-1]
+            current_time = datetime.now()
             
-            atr = df['high'].tail(10).sub(df['low'].tail(10)).mean()
-            
-            entry_levels = {
-                "stop_loss": current_price - (atr * 0.5) if signal_action == "BUY" else current_price + (atr * 0.5),
-                "take_profit_1": current_price + (atr * 0.8) if signal_action == "BUY" else current_price - (atr * 0.8),
-                "take_profit_2": current_price + (atr * 1.5) if signal_action == "BUY" else current_price - (atr * 1.5)
-            }
-            
-            return {
-                "action": signal_action,
-                "confidence": confidence,
-                "reason": " | ".join(reasons[:3]),
-                "entry_price": current_price,
-                "stop_loss": entry_levels["stop_loss"],
-                "take_profit_1": entry_levels["take_profit_1"],
-                "take_profit_2": entry_levels["take_profit_2"],
-                "risk_reward": abs(entry_levels["take_profit_1"] - current_price) / abs(entry_levels["stop_loss"] - current_price),
-                "volatility": volatility,
-                "momentum": momentum,
-                "volume_spike": volume_spike
-            }
-        
-        def simulate_trade(self, df, signals):
-            current_price = df['close'].iloc[-1]
-            
-            if self.position == 0 and signals["action"] in ["BUY", "SELL"]:
-                self.position = 1 if signals["action"] == "BUY" else -1
+            if self.position == 0 and action in ("BUY", "SELL"):
+                self.position = 1 if action == "BUY" else -1
                 self.entry_price = current_price
-                
+                self.trades_history.append({
+                    "entry_time": current_time,
+                    "position": action,
+                    "entry_price": current_price,
+                    "confidence": confidence
+                })
             elif self.position != 0:
+                # Exit trade
+                last_trade = self.trades_history[-1]
                 profit_pips = (current_price - self.entry_price) * self.position
                 profit_percent = profit_pips / self.entry_price * 100
                 
-                exit_trade = False
-                exit_reason = ""
+                last_trade.update({
+                    "exit_time": current_time,
+                    "exit_price": current_price,
+                    "profit_pips": profit_pips,
+                    "profit_percent": profit_percent,
+                    "exit_reason": "auto"
+                })
                 
-                if (self.position == 1 and current_price >= signals["take_profit_1"]) or \
-                   (self.position == -1 and current_price <= signals["take_profit_1"]):
-                    exit_trade = True
-                    exit_reason = "Take Profit Hit"
-                    
-                elif (self.position == 1 and current_price <= signals["stop_loss"]) or \
-                     (self.position == -1 and current_price >= signals["stop_loss"]):
-                    exit_trade = True
-                    exit_reason = "Stop Loss Hit"
-                    
-                elif len(self.trades_history) > 0:
-                    trade_duration = 5
-                    if len(df) - len(self.trades_history) > trade_duration:
-                        exit_trade = True
-                        exit_reason = "Time Exit"
+                self.position = 0
+                self.entry_price = None
                 
-                if exit_trade:
-                    trade = {
-                        "entry_price": self.entry_price,
-                        "exit_price": current_price,
-                        "position": self.position,
-                        "profit_pips": profit_pips,
-                        "profit_percent": profit_percent,
-                        "exit_reason": exit_reason,
-                        "timestamp": datetime.now()
-                    }
-                    self.trades_history.append(trade)
-                    self.total_profit += profit_percent
-                    
-                    self.position = 0
-                    self.entry_price = 0
-                    
-                    winning_trades = sum(1 for t in self.trades_history if t["profit_percent"] > 0)
-                    self.win_rate = winning_trades / len(self.trades_history) if self.trades_history else 0
-                    
-                    return trade
+        def train_one_episode(self, df):
+            """Train the RL model on one episode"""
+            env = TradingEnv(df)
+            state = env.reset()
+            total_loss = 0.0
             
-            return None
-        
-        def learn_from_trade(self, trade):
-            if trade:
-                if trade["profit_percent"] > 0:
-                    self.epsilon = max(self.epsilon_min, self.epsilon * 0.99)
+            while not env.done:
+                q_values, cache = self.predict(state)
+                z1, a1, z2, a2 = cache
+                
+                # Choose action
+                if np.random.rand() < self.epsilon:
+                    action = np.random.choice(self.action_size)
                 else:
-                    self.epsilon = min(0.5, self.epsilon * 1.01)
-        
-        def get_performance_stats(self):
-            if not self.trades_history:
-                return {
-                    "total_trades": 0,
-                    "win_rate": 0,
-                    "total_profit": 0,
-                    "avg_profit": 0,
-                    "best_trade": 0,
-                    "worst_trade": 0,
-                    "recent_trades": []
-                }
+                    action = np.argmax(q_values)
+                    
+                next_state, reward, done, _, info = env.step(action)
+                
+                # Q-learning update
+                q_next, _ = self.predict(next_state)
+                target = reward + self.gamma * np.max(q_next) * (0 if done else 1)
+                error = q_values[action] - target
+                total_loss += error ** 2
+                
+                # Backpropagation
+                grad_z3 = np.zeros(self.action_size)
+                grad_z3[action] = error
+                
+                # Update layer 3
+                self.model['layer3'][:, action] -= self.learning_rate * a2.flatten() * grad_z3[action]
+                self.model['bias3'][0, action] -= self.learning_rate * grad_z3[action]
+                
+                # Update layer 2
+                delta2 = (grad_z3 @ self.model['layer3'].T) * (1 - a2**2)
+                self.model['layer2'] -= self.learning_rate * np.outer(a1.flatten(), delta2.flatten())
+                self.model['bias2'] -= self.learning_rate * delta2.flatten()
+                
+                # Update layer 1
+                delta1 = (delta2 @ self.model['layer2'].T) * (1 - a1**2)
+                self.model['layer1'] -= self.learning_rate * np.outer(state, delta1.flatten())
+                self.model['bias1'] -= self.learning_rate * delta1.flatten()
+                
+                state = next_state
+                
+            # Update epsilon
+            if info["win_rate"] > 0.5:
+                self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+            else:
+                self.epsilon = min(0.5, self.epsilon * 1.01)
+                
+            return info, total_loss
             
-            profits = [t["profit_percent"] for t in self.trades_history]
+        def get_performance_stats(self):
+            """Get bot performance statistics"""
+            completed_trades = [t for t in self.trades_history if "profit_percent" in t]
+            
+            if not completed_trades:
+                return {
+                    "total_trades": 0, "wins": 0, "losses": 0, "win_rate": 0,
+                    "avg_confidence": 0, "total_profit": 0, "avg_profit": 0
+                }
+                
+            df_trades = pd.DataFrame(completed_trades)
+            wins = (df_trades["profit_percent"] > 0).sum()
+            total = len(df_trades)
             
             return {
-                "total_trades": len(self.trades_history),
-                "win_rate": self.win_rate,
-                "total_profit": self.total_profit,
-                "avg_profit": np.mean(profits),
-                "best_trade": max(profits),
-                "worst_trade": min(profits),
-                "recent_trades": self.trades_history[-5:] if len(self.trades_history) >= 5 else self.trades_history
+                "total_trades": total,
+                "wins": wins,
+                "losses": total - wins,
+                "win_rate": wins / total,
+                "avg_confidence": df_trades["confidence"].mean(),
+                "total_profit": df_trades["profit_percent"].sum(),
+                "avg_profit": df_trades["profit_percent"].mean()
             }
 
     # Initialize RL Bot
     @st.cache_resource
-    def get_rl_bot(symbol):
-        return ScalpingRLBot(symbol)
+    def get_rl_bot():
+        return ScalpingRLBot()
 
-    # AllTick API endpoints
-    API_ENDPOINTS = {
-        "forex": "https://quote.tradeswitcher.com/quote-b-api",
-        "commodity": "https://quote.tradeswitcher.com/quote-b-api", 
-        "index": "https://quote.tradeswitcher.com/quote-b-api"
-    }
-
+    # Data fetching functions
     def get_api_endpoint(symbol):
         symbol_info = SYMBOLS.get(symbol, {})
         asset_type = symbol_info.get("type", "forex")
-        return API_ENDPOINTS.get(asset_type, API_ENDPOINTS["forex"])
+        return {
+            "forex": "https://quote.tradeswitcher.com/quote-b-api",
+            "commodity": "https://quote.tradeswitcher.com/quote-b-api", 
+            "index": "https://quote.tradeswitcher.com/quote-b-api"
+        }[asset_type]
 
     def fetch_real_kline_data(symbol, kline_type=1, num_candles=100):
         try:
@@ -705,7 +790,7 @@ if check_password():
                         
                         df = pd.DataFrame(df_data)
                         df = df.sort_values('time').reset_index(drop=True)
-                        return df
+                        return add_indicators(df)
                     else:
                         return None
                 else:
@@ -772,7 +857,7 @@ if check_password():
             lows.append(low)
             volumes.append(volume)
         
-        return pd.DataFrame({
+        df = pd.DataFrame({
             'time': timestamps,
             'open': opens,
             'high': highs,
@@ -780,34 +865,33 @@ if check_password():
             'close': closes,
             'volume': volumes
         })
+        
+        return add_indicators(df)
 
-    # Auto-refresh mechanism
-    if 'last_refresh' not in st.session_state:
-        st.session_state.last_refresh = time.time()
-        st.session_state.refresh_counter = 0
+    @st.cache_data(ttl=10)  # Cache for 10 seconds
+    def get_market_data(symbol, timeframe, num_candles, use_real_data, refresh_count):
+        timeframe_mapping = {
+            "1 Min": 1, "5 Min": 2, "15 Min": 3,
+            "30 Min": 4, "1 Hr": 5, "Daily": 8
+        }
+        
+        if use_real_data and "ALLTICK_API_KEY" in st.secrets:
+            kline_type = timeframe_mapping.get(timeframe, 3)
+            df = fetch_real_kline_data(symbol, kline_type, num_candles)
+            if df is None:
+                df = create_mock_data(symbol, num_candles)
+            return df
+        else:
+            return create_mock_data(symbol, num_candles)
 
-    # Check if 30 seconds have passed
-    current_time = time.time()
-    if current_time - st.session_state.last_refresh >= 30:
-        st.session_state.last_refresh = current_time
-        st.session_state.refresh_counter += 1
-        st.rerun()
-
-    # Auto-refresh script
-    st.markdown("""
-    <script>
-        // Auto-refresh every 30 seconds
-        setTimeout(function() {
-            window.location.reload();
-        }, 30000);
-    </script>
-    """, unsafe_allow_html=True)
+    # Initialize RL Bot
+    rl_bot = get_rl_bot()
 
     # Header
     st.markdown("""
     <div class="header-card">
         <h1 class="header-title">🤖 RL Scalping Trading Bot</h1>
-        <p class="header-subtitle">uWhisper.com • Advanced Reinforcement Learning • Real-time Market Data</p>
+        <p class="header-subtitle">uWhisper.com • Advanced Reinforcement Learning • Real-time Market Data • Auto-refresh 10s</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -837,9 +921,6 @@ if check_password():
         symbol = symbol_options[selected_index]
         symbol_info = SYMBOLS[symbol]
 
-        # Initialize RL Bot for current symbol
-        rl_bot = get_rl_bot(symbol)
-
         st.markdown(f"""
         <div class="sidebar-section">
             <strong>📊 Instrument Details:</strong><br>
@@ -850,8 +931,8 @@ if check_password():
         """, unsafe_allow_html=True)
 
         # Timeframe
-        timeframe_options = ["1 Minute", "5 Minutes", "15 Minutes", "30 Minutes", "1 Hour", "Daily"]
-        timeframe = st.selectbox("⏰ Timeframe", timeframe_options, index=2)
+        timeframe_options = ["1 Min", "5 Min", "15 Min", "30 Min", "1 Hr", "Daily"]
+        timeframe = st.selectbox("⏰ Timeframe", timeframe_options, index=0)
 
         # Number of candles
         num_candles = st.slider("📊 Number of Candles", 50, 500, 100, 50)
@@ -869,26 +950,9 @@ if check_password():
         else:
             st.markdown('<span class="status-badge status-info">🔵 DEMO DATA MODE</span>', unsafe_allow_html=True)
 
-    # Fetch data for RL bot with caching control
-    @st.cache_data(ttl=30)  # Cache for 30 seconds
-    def get_market_data(symbol, timeframe, num_candles, use_real_data, api_available):
-        if use_real_data and api_available:
-            timeframe_mapping = {
-                "1 Minute": 1, "5 Minutes": 2, "15 Minutes": 3,
-                "30 Minutes": 4, "1 Hour": 5, "Daily": 8
-            }
-            kline_type = timeframe_mapping.get(timeframe, 3)
-            df = fetch_real_kline_data(symbol, kline_type, num_candles)
-            
-            if df is None:
-                df = create_mock_data(symbol, num_candles)
-            return df
-        else:
-            return create_mock_data(symbol, num_candles)
-
     # Get fresh data
     with st.spinner(f"🔄 Fetching latest market data for {symbol}..."):
-        df = get_market_data(symbol, timeframe, num_candles, use_real_data, api_available)
+        df = get_market_data(symbol, timeframe, num_candles, use_real_data, refresh_counter)
 
     # Market Stats Section with real-time indicator
     current_timestamp = datetime.now().strftime("%H:%M:%S")
@@ -940,74 +1004,73 @@ if check_password():
             </div>
             """, unsafe_allow_html=True)
 
-    # RL Scalping Bot Section
-    st.markdown("## 🤖 AI Scalping Bot Analysis")
+        # Generate and simulate signal
+        action, confidence = rl_bot.get_signals(df)
+        rl_bot.simulate_trade(df, action, confidence)
 
-    if df is not None and not df.empty:
-        # Get RL predictions
-        rl_signals = rl_bot.get_scalping_signals(df)
-        
-        # Simulate learning
-        simulated_trade = rl_bot.simulate_trade(df, rl_signals)
-        if simulated_trade:
-            rl_bot.learn_from_trade(simulated_trade)
-        
-        # Get performance stats
-        performance = rl_bot.get_performance_stats()
-        
+        # Log new signals
+        if action in ("BUY", "SELL") and action != st.session_state.last_signal:
+            st.session_state.signal_log.append({
+                "Time": current_timestamp,
+                "Signal": action,
+                "Price": format_price(current_price, symbol),
+                "Confidence": f"{confidence:.1%}"
+            })
+            st.session_state.last_signal = action
+
+        # RL Scalping Bot Section
+        st.markdown("## 🤖 AI Scalping Bot Analysis")
+
         # Display RL signals
         col_signal, col_performance = st.columns([2.5, 1.5])
         
         with col_signal:
-            signal_class = f"signal-{rl_signals['action'].lower()}"
-            signal_icon = "🟢" if rl_signals["action"] == "BUY" else "🔴" if rl_signals["action"] == "SELL" else "🟡"
+            signal_class = f"signal-{action.lower()}"
+            signal_icon = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "🟡"
             
             st.markdown(f"""
             <div class="signal-card {signal_class}">
                 <div class="signal-title">
-                    {signal_icon} RL SCALPING SIGNAL: {rl_signals["action"]}
+                    {signal_icon} RL SCALPING SIGNAL: {action}
                 </div>
                 <div style="margin-bottom: 1rem;">
-                    <strong>Confidence:</strong> {rl_signals["confidence"]:.1%} | 
+                    <strong>Confidence:</strong> {confidence:.1%} | 
                     <strong>Strategy:</strong> Reinforcement Learning Model
                 </div>
                 <div style="color: #67748e; line-height: 1.6;">
-                    <strong>Analysis:</strong> {rl_signals["reason"]}
+                    <strong>Analysis:</strong> Advanced RL neural network with 30% exploration rate for optimal learning
                 </div>
             </div>
             """, unsafe_allow_html=True)
             
-            if rl_signals["action"] != "HOLD":
+            # Technical indicators display
+            if "rsi14" in df.columns and "macd_hist" in df.columns:
+                rsi = df["rsi14"].iloc[-1]
+                macd_hist = df["macd_hist"].iloc[-1]
+                ema9 = df["ema9"].iloc[-1] if "ema9" in df.columns else current_price
+                ema55 = df["ema55"].iloc[-1] if "ema55" in df.columns else current_price
+                
                 st.markdown(f"""
-                <div class="signal-details">
-                    <div class="signal-detail">
-                        <div class="signal-detail-title">Entry Price</div>
-                        <div class="signal-detail-value">{format_price(rl_signals["entry_price"], symbol)}</div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-top: 1rem;">
+                    <div style="padding: 0.75rem; background: rgba(255, 255, 255, 0.7); border-radius: 8px;">
+                        <div style="font-size: 0.75rem; color: #67748e; font-weight: 600;">RSI (14)</div>
+                        <div style="font-size: 1rem; font-weight: 700; color: {'#f44336' if rsi > 70 else '#4caf50' if rsi < 30 else '#344767'}">{rsi:.1f}</div>
                     </div>
-                    <div class="signal-detail">
-                        <div class="signal-detail-title">Stop Loss</div>
-                        <div class="signal-detail-value">{format_price(rl_signals["stop_loss"], symbol)}</div>
+                    <div style="padding: 0.75rem; background: rgba(255, 255, 255, 0.7); border-radius: 8px;">
+                        <div style="font-size: 0.75rem; color: #67748e; font-weight: 600;">MACD Hist</div>
+                        <div style="font-size: 1rem; font-weight: 700; color: {'#4caf50' if macd_hist > 0 else '#f44336'}">{macd_hist:.4f}</div>
                     </div>
-                    <div class="signal-detail">
-                        <div class="signal-detail-title">Take Profit</div>
-                        <div class="signal-detail-value">{format_price(rl_signals["take_profit_1"], symbol)}</div>
-                    </div>
-                    <div class="signal-detail">
-                        <div class="signal-detail-title">Risk/Reward</div>
-                        <div class="signal-detail-value">1:{rl_signals["risk_reward"]:.1f}</div>
-                    </div>
-                    <div class="signal-detail">
-                        <div class="signal-detail-title">Volatility</div>
-                        <div class="signal-detail-value">{rl_signals["volatility"]:.3f}</div>
-                    </div>
-                    <div class="signal-detail">
-                        <div class="signal-detail-title">Momentum</div>
-                        <div class="signal-detail-value">{rl_signals["momentum"]}</div>
+                    <div style="padding: 0.75rem; background: rgba(255, 255, 255, 0.7); border-radius: 8px;">
+                        <div style="font-size: 0.75rem; color: #67748e; font-weight: 600;">EMA Trend</div>
+                        <div style="font-size: 1rem; font-weight: 700; color: {'#4caf50' if ema9 > ema55 else '#f44336'}">{"Bullish" if ema9 > ema55 else "Bearish"}</div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
         
         with col_performance:
+            # Get performance stats
+            performance = rl_bot.get_performance_stats()
+            
             st.markdown(f"""
             <div class="performance-card">
                 <div class="performance-title">🏆 Bot Performance</div>
@@ -1031,16 +1094,12 @@ if check_password():
                     <span class="performance-value {profit_class}">{performance['total_profit']:.2f}%</span>
                 </div>
                 <div class="performance-metric">
-                    <span class="performance-label">Avg Profit</span>
-                    <span class="performance-value">{performance['avg_profit']:.2f}%</span>
+                    <span class="performance-label">Avg Confidence</span>
+                    <span class="performance-value">{performance['avg_confidence']:.1%}</span>
                 </div>
                 <div class="performance-metric">
-                    <span class="performance-label">Best Trade</span>
-                    <span class="performance-value performance-positive">{performance['best_trade']:.2f}%</span>
-                </div>
-                <div class="performance-metric">
-                    <span class="performance-label">Worst Trade</span>
-                    <span class="performance-value performance-negative">{performance['worst_trade']:.2f}%</span>
+                    <span class="performance-label">Exploration Rate</span>
+                    <span class="performance-value">{rl_bot.epsilon:.1%}</span>
                 </div>
                 """, unsafe_allow_html=True)
                 
@@ -1049,7 +1108,7 @@ if check_password():
                 elif performance["win_rate"] > 0.4:
                     st.markdown('<div style="margin-top: 1rem;"><span class="status-badge status-warning">🟡 Learning Phase</span></div>', unsafe_allow_html=True)
                 else:
-                    st.markdown('<div style="margin-top: 1rem;"><span class="status-badge status-warning">🔴 Needs Improvement</span></div>', unsafe_allow_html=True)
+                    st.markdown('<div style="margin-top: 1rem;"><span class="status-badge status-warning">🔴 Needs Training</span></div>', unsafe_allow_html=True)
             else:
                 st.markdown("""
                 <div class="performance-metric">
@@ -1063,41 +1122,155 @@ if check_password():
             
             st.markdown("</div>", unsafe_allow_html=True)
 
-    # Training Controls Section
-    st.markdown("## 🧠 RL Bot Training & Management")
+        # Signal Log and Trade History
+        col_log, col_trades = st.columns(2)
+        
+        with col_log:
+            st.markdown("""
+            <div class="data-card">
+                <div class="data-title">📝 Signal Log</div>
+            """, unsafe_allow_html=True)
+            
+            if st.session_state.signal_log:
+                signal_df = pd.DataFrame(st.session_state.signal_log)
+                st.dataframe(signal_df.tail(10), use_container_width=True)
+            else:
+                st.write("No signals generated yet.")
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        with col_trades:
+            st.markdown("""
+            <div class="data-card">
+                <div class="data-title">📋 Executed Trades</div>
+            """, unsafe_allow_html=True)
+            
+            if rl_bot.trades_history:
+                trades_df = pd.DataFrame(rl_bot.trades_history)
+                if "entry_time" in trades_df.columns:
+                    trades_df["entry_time"] = pd.to_datetime(trades_df["entry_time"]).dt.strftime("%H:%M:%S")
+                if "exit_time" in trades_df.columns:
+                    trades_df["exit_time"] = pd.to_datetime(trades_df["exit_time"]).dt.strftime("%H:%M:%S")
+                
+                display_cols = ["entry_time", "position", "entry_price", "confidence"]
+                if "exit_time" in trades_df.columns:
+                    display_cols.extend(["exit_time", "profit_percent"])
+                
+                st.dataframe(trades_df[display_cols].tail(10), use_container_width=True)
+            else:
+                st.write("No trades executed yet.")
+            
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    col_train1, col_train2, col_train3 = st.columns(3)
+        # Training Controls Section
+        st.markdown("## 🧠 RL Bot Training & Management")
 
-    with col_train1:
-        if st.button("🚀 Train on Current Data", type="primary"):
-            with st.spinner("Training RL bot..."):
-                progress = st.progress(0)
-                for i in range(50):
-                    progress.progress((i + 1) / 50)
-                    time.sleep(0.01)
-                st.success("✅ Training completed!")
+        col_train1, col_train2, col_train3 = st.columns(3)
 
-    with col_train2:
-        if st.button("🎯 Reset Bot Performance"):
-            rl_bot.trades_history = []
-            rl_bot.total_profit = 0
-            rl_bot.win_rate = 0
-            rl_bot.epsilon = 1.0
-            st.success("✅ Bot performance reset!")
+        with col_train1:
+            if st.button("🚀 Train One Episode", type="primary"):
+                with st.spinner("Training RL bot on current market data..."):
+                    info, loss = rl_bot.train_one_episode(df)
+                    st.success(
+                        f"✅ Episode completed: Trades={info['trades']} | "
+                        f"Win Rate={info['win_rate']:.1%} | "
+                        f"Profit={info['profit']:.2f}% | Loss={loss:.2f}"
+                    )
 
-    with col_train3:
-        if st.button("📊 Bot Statistics"):
-            st.info(f"""
-            **Learning Stats:**
-            - Exploration: {rl_bot.epsilon:.1%}
-            - Position: {"LONG" if rl_bot.position == 1 else "SHORT" if rl_bot.position == -1 else "NEUTRAL"}
-            - Progress: {min(100, len(df) * 2):.0f}%
-            """)
+        with col_train2:
+            if st.button("🎯 Reset Bot Performance"):
+                rl_bot.trades_history = []
+                rl_bot.position = 0
+                rl_bot.entry_price = None
+                rl_bot.epsilon = 1.0
+                st.session_state.signal_log = []
+                st.session_state.last_signal = "HOLD"
+                st.success("✅ Bot performance and logs reset!")
+
+        with col_train3:
+            if st.button("📊 Bot Statistics"):
+                st.info(f"""
+                **Learning Stats:**
+                - Exploration Rate: {rl_bot.epsilon:.1%}
+                - Position: {"LONG" if rl_bot.position == 1 else "SHORT" if rl_bot.position == -1 else "NEUTRAL"}
+                - Learning Rate: {rl_bot.learning_rate}
+                - Gamma (Discount): {rl_bot.gamma}
+                """)
+
+        # Chat with Bot Section
+        st.markdown("""
+        <div class="chat-card">
+            <div class="data-title">💬 Chat with Bot</div>
+        """, unsafe_allow_html=True)
+        
+        user_question = st.text_input("Ask me about my sentiment, status, strategy, or market patterns:")
+        
+        if user_question:
+            def get_bot_response(message):
+                msg_lower = message.lower()
+                performance = rl_bot.get_performance_stats()
+                
+                if "status" in msg_lower or "performance" in msg_lower:
+                    return (f"I've executed {performance['total_trades']} trades with a {performance['win_rate']:.1%} win rate. "
+                           f"Total profit: {performance['total_profit']:.2f}%")
+                
+                elif "sentiment" in msg_lower:
+                    if performance["win_rate"] > 0.6:
+                        return "🟢 I'm crushing it! High win rate and strong performance."
+                    elif performance["win_rate"] > 0.4:
+                        return "🟡 I'm in learning mode. Cautious optimism as I adapt to market patterns."
+                    else:
+                        return "🔴 I need more training. Market conditions are challenging."
+                
+                elif "strategy" in msg_lower or "epsilon" in msg_lower:
+                    return (f"My strategy uses reinforcement learning with ε-greedy exploration at {rl_bot.epsilon:.2%}. "
+                           f"Learning rate: {rl_bot.learning_rate}, Discount factor: {rl_bot.gamma}")
+                
+                elif "pattern" in msg_lower or "indicator" in msg_lower:
+                    if "rsi14" in df.columns and "macd_hist" in df.columns:
+                        rsi = df["rsi14"].iloc[-1]
+                        macd_hist = df["macd_hist"].iloc[-1]
+                        ema9 = df["ema9"].iloc[-1] if "ema9" in df.columns else current_price
+                        ema55 = df["ema55"].iloc[-1] if "ema55" in df.columns else current_price
+                        
+                        patterns = []
+                        if ema9 > ema55:
+                            patterns.append("EMA bullish trend")
+                        else:
+                            patterns.append("EMA bearish trend")
+                            
+                        if rsi > 70:
+                            patterns.append("RSI overbought")
+                        elif rsi < 30:
+                            patterns.append("RSI oversold")
+                        else:
+                            patterns.append("RSI neutral")
+                            
+                        if macd_hist > 0:
+                            patterns.append("MACD positive momentum")
+                        else:
+                            patterns.append("MACD negative momentum")
+                            
+                        return f"Current market patterns: {', '.join(patterns)}."
+                    else:
+                        return "Technical indicators are being calculated. Please wait for more data."
+                
+                else:
+                    return "I can discuss my performance, sentiment, trading strategy, or current market patterns. What would you like to know?"
+            
+            response = get_bot_response(user_question)
+            st.markdown(f"""
+            <div class="bot-response">
+                <strong>🤖 Bot:</strong> {response}
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("</div>", unsafe_allow_html=True)
 
     # Footer Status with live indicator
     st.markdown("---")
     data_source = "REAL AllTick Data" if use_real_data and api_available else "Demo Data"
-    rl_status = f"RL: {rl_signals['action']} ({rl_signals['confidence']:.0%})"
+    rl_status = f"RL: {action} ({confidence:.0%})"
     live_indicator = "🟢 LIVE" if use_real_data and api_available else "🔵 DEMO"
 
     st.markdown(f"""
@@ -1107,7 +1280,7 @@ if check_password():
         <span class="status-badge status-info">{data_source}</span>
         <span class="status-badge status-success">{live_indicator}</span>
         <div style="margin-top: 0.5rem; font-size: 0.75rem; color: #67748e;">
-            Auto-refresh: Every 30 seconds | Last update: {current_timestamp} | uWhisper.com Private Trading Bot
+            Auto-refresh: Every 10 seconds | Last update: {current_timestamp} | uWhisper.com Private Trading Bot
         </div>
     </div>
     """, unsafe_allow_html=True)
