@@ -3,7 +3,10 @@ pandas
 numpy
 requests
 streamlit-autorefresh
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
+plotly
 google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+scikit-learn
+tensorflow
+pickle-mixin
