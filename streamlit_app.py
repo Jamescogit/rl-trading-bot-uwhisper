@@ -12,9 +12,6 @@ import hashlib
 import os
 import pickle
 import base64
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
 
 # Auto-refresh setup
 try:
@@ -29,7 +26,7 @@ CACHE_FOLDER = "cache"
 os.makedirs(CACHE_FOLDER, exist_ok=True)
 
 # EODHD API Configuration
-EODHD_API_KEY = "686e628db5f664.24674585"  # Store in secrets for production
+EODHD_API_KEY = "686e628db5f664.24674585"
 EODHD_SYMBOLS = {
     "EURUSD": "EURUSD.FOREX",
     "EURJPY": "EURJPY.FOREX", 
@@ -52,7 +49,6 @@ def enhanced_save_bot_state_v2(bot_state):
     """Enhanced save with multiple backup layers"""
     success_count = 0
     
-    # 1. Save locally
     try:
         with open(STATE_FILE, 'wb') as f:
             pickle.dump(bot_state, f)
@@ -60,7 +56,6 @@ def enhanced_save_bot_state_v2(bot_state):
     except Exception as e:
         st.sidebar.warning(f"Local save failed: {e}")
     
-    # 2. Save to session state
     try:
         if 'backup_bot_states' not in st.session_state:
             st.session_state.backup_bot_states = []
@@ -81,7 +76,6 @@ def enhanced_save_bot_state_v2(bot_state):
     except Exception as e:
         st.sidebar.warning(f"Session backup failed: {e}")
     
-    # 3. Save as downloadable JSON
     try:
         backup_data = {
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -99,7 +93,6 @@ def enhanced_save_bot_state_v2(bot_state):
 
 def enhanced_load_bot_state_v2():
     """Enhanced load with multiple fallback options"""
-    # Try local first
     try:
         with open(STATE_FILE, 'rb') as f:
             bot_state = pickle.load(f)
@@ -109,7 +102,6 @@ def enhanced_load_bot_state_v2():
     except Exception as e:
         st.sidebar.warning(f"Local load error: {e}")
     
-    # Try session state backup
     try:
         if 'backup_bot_states' in st.session_state and st.session_state.backup_bot_states:
             latest_backup = st.session_state.backup_bot_states[-1]
@@ -150,14 +142,12 @@ def get_eodhd_data(symbol, limit=100):
     if not mapped_symbol:
         return None
     
-    # Try cache first
     cached = load_cached_data(symbol)
     if cached:
         df = pd.DataFrame(cached)
         df['date'] = pd.to_datetime(df['date'])
         return df.sort_values("date")
     
-    # Fetch from API
     url = f"https://eodhd.com/api/eod/{mapped_symbol}?api_token={EODHD_API_KEY}&fmt=json&order=d&limit={limit}"
     try:
         response = requests.get(url, timeout=10)
@@ -175,7 +165,7 @@ def get_economic_events():
     event_cache = os.path.join(CACHE_FOLDER, "events.json")
     if os.path.exists(event_cache):
         cache_time = os.path.getmtime(event_cache)
-        if time.time() - cache_time < 3600:  # 1 hour cache
+        if time.time() - cache_time < 3600:
             with open(event_cache, "r") as f:
                 return json.load(f)
     
@@ -197,7 +187,7 @@ def get_news_sentiment():
     news_cache = os.path.join(CACHE_FOLDER, "news.json")
     if os.path.exists(news_cache):
         cache_time = os.path.getmtime(news_cache)
-        if time.time() - cache_time < 1800:  # 30 min cache
+        if time.time() - cache_time < 1800:
             with open(news_cache, "r") as f:
                 return json.load(f).get('sentiment', 0)
     
@@ -214,7 +204,6 @@ def get_news_sentiment():
             elif any(w in title for w in ["drop", "fall", "bearish", "down", "crash", "decline"]):
                 sentiment_score -= 1
         
-        # Normalize sentiment to -1 to 1
         score = max(-1, min(1, sentiment_score / 5))
         
         with open(news_cache, "w") as f:
@@ -288,7 +277,6 @@ if check_password():
             min-height: 100vh;
         }
         
-        /* Expert Header */
         .expert-header {
             background: linear-gradient(135deg, #ff6b6b 0%, #4ecdc4 100%);
             border-radius: 25px;
@@ -304,9 +292,6 @@ if check_password():
             font-weight: 800;
             margin: 0;
             text-shadow: 0 4px 8px rgba(0,0,0,0.2);
-            background: linear-gradient(45deg, #fff, #f0f0f0);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
         }
         
         .expert-subtitle {
@@ -316,7 +301,6 @@ if check_password():
             font-weight: 500;
         }
         
-        /* Report Card */
         .report-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             border-radius: 20px;
@@ -360,7 +344,6 @@ if check_password():
             opacity: 0.9;
         }
         
-        /* Enhanced Cards */
         .expert-card {
             background: white;
             border-radius: 20px;
@@ -386,7 +369,6 @@ if check_password():
             gap: 0.5rem;
         }
         
-        /* Signal Cards */
         .signal-expert-buy {
             background: linear-gradient(135deg, #00f260 0%, #0575e6 100%);
             color: white;
@@ -405,7 +387,6 @@ if check_password():
             border: none;
         }
         
-        /* Performance Chart */
         .chart-container {
             background: white;
             border-radius: 20px;
@@ -414,7 +395,6 @@ if check_password():
             box-shadow: 0 20px 40px rgba(0,0,0,0.1);
         }
         
-        /* Trade Table */
         .trade-table {
             background: white;
             border-radius: 20px;
@@ -422,23 +402,6 @@ if check_password():
             box-shadow: 0 20px 40px rgba(0,0,0,0.1);
         }
         
-        .profit-cell {
-            background: #d4edda;
-            color: #155724;
-            font-weight: 600;
-            padding: 0.5rem;
-            border-radius: 8px;
-        }
-        
-        .loss-cell {
-            background: #f8d7da;
-            color: #721c24;
-            font-weight: 600;
-            padding: 0.5rem;
-            border-radius: 8px;
-        }
-        
-        /* Status Indicators */
         .status-expert {
             display: inline-flex;
             align-items: center;
@@ -461,7 +424,6 @@ if check_password():
             color: #2c3e50;
         }
         
-        /* Elite Badge */
         .elite-badge {
             position: fixed;
             top: 15px;
@@ -474,6 +436,50 @@ if check_password():
             font-weight: 700;
             z-index: 1000;
             box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+        
+        .metric-card {
+            background: white;
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 20px 27px 0 rgba(0,0,0,.05);
+            border: none;
+            transition: transform 0.3s ease;
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 25px 35px 0 rgba(0,0,0,.1);
+        }
+        
+        .metric-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: #67748e;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .metric-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #344767;
+            margin-bottom: 0.25rem;
+        }
+        
+        .metric-change {
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+        
+        .metric-change.positive {
+            color: #4caf50;
+        }
+        
+        .metric-change.negative {
+            color: #f44336;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -522,12 +528,6 @@ if check_password():
         df["bb_upper"] = df["bb_middle"] + (bb_std * 2)
         df["bb_lower"] = df["bb_middle"] - (bb_std * 2)
         
-        # Stochastic
-        low_14 = df["low"].rolling(14).min() if "low" in df.columns else df[close_col].rolling(14).min()
-        high_14 = df["high"].rolling(14).max() if "high" in df.columns else df[close_col].rolling(14).max()
-        df["stoch_k"] = 100 * (df[close_col] - low_14) / (high_14 - low_14)
-        df["stoch_d"] = df["stoch_k"].rolling(3).mean()
-        
         return df.fillna(method="bfill").fillna(method="ffill")
 
     # Enhanced Trading Environment
@@ -549,11 +549,10 @@ if check_password():
         
         def _get_state(self):
             if self.current_step < self.window_size:
-                return np.zeros(15)  # Increased state size
+                return np.zeros(15)
             
             window = self.df.iloc[self.current_step-self.window_size:self.current_step]
             
-            # Use appropriate price column
             if 'close' in window.columns:
                 close_prices = window["close"].values
             elif 'adjusted_close' in window.columns:
@@ -592,13 +591,7 @@ if check_password():
             else:
                 features.append(0.5)
             
-            # Stochastic
-            if "stoch_k" in window.columns:
-                features.append(window["stoch_k"].iloc[-1] / 100)
-            else:
-                features.append(0.5)
-            
-            # Volume features (if available)
+            # Volume features
             if "volume" in window.columns:
                 vol_ratio = window["volume"].iloc[-1] / window["volume"].mean()
                 features.append(np.tanh(vol_ratio))
@@ -606,9 +599,9 @@ if check_password():
                 features.append(0)
             
             # Time features
-            features.append(np.sin(2 * np.pi * datetime.now().hour / 24))  # Hour of day
+            features.append(np.sin(2 * np.pi * datetime.now().hour / 24))
             features.append(np.cos(2 * np.pi * datetime.now().hour / 24))
-            features.append(np.sin(2 * np.pi * datetime.now().weekday() / 7))  # Day of week
+            features.append(np.sin(2 * np.pi * datetime.now().weekday() / 7))
             
             # Market regime
             sma_short = np.mean(close_prices[-5:])
@@ -623,7 +616,7 @@ if check_password():
             momentum = (close_prices[-1] - close_prices[-10]) / close_prices[-10] if len(close_prices) >= 10 else 0
             features.append(momentum)
             
-            return np.array(features[:15])  # Ensure exactly 15 features
+            return np.array(features[:15])
         
         def step(self, action):
             if 'close' in self.df.columns:
@@ -631,26 +624,23 @@ if check_password():
             elif 'adjusted_close' in self.df.columns:
                 current_price = self.df.at[self.current_step, "adjusted_close"]
             else:
-                current_price = 100  # Default price
+                current_price = 100
             
             reward = 0
             
-            # Execute action
-            if action == 1 and self.position != 1:  # Buy
+            if action == 1 and self.position != 1:
                 self.position = 1
                 self.entry_price = current_price
-                reward -= 0.02  # Transaction cost
-            elif action == 2 and self.position != -1:  # Sell
+                reward -= 0.02
+            elif action == 2 and self.position != -1:
                 self.position = -1
                 self.entry_price = current_price
-                reward -= 0.02  # Transaction cost
+                reward -= 0.02
             
-            # Calculate profit/loss
             if self.position != 0 and self.entry_price is not None:
                 price_diff = (current_price - self.entry_price) * self.position
-                reward += price_diff * 1000 - 0.001  # Scaled reward
+                reward += price_diff * 1000 - 0.001
                 
-                # Exit conditions
                 if abs(price_diff) >= 0.01 or self.current_step % 50 == 0:
                     profit_percent = price_diff / self.entry_price * 100
                     self.total_profit += profit_percent
@@ -678,12 +668,12 @@ if check_password():
     # Expert RL Bot
     class ExpertRLBot:
         def __init__(self):
-            self.state_size = 15  # Increased state size
-            self.action_size = 3  # Hold, Buy, Sell
-            self.epsilon = 0.95  # Higher initial exploration
+            self.state_size = 15
+            self.action_size = 3
+            self.epsilon = 0.95
             self.epsilon_min = 0.01
             self.epsilon_decay = 0.995
-            self.gamma = 0.99  # Higher discount factor
+            self.gamma = 0.99
             self.learning_rate = 0.001
             self._init_model()
             self.position = 0
@@ -766,9 +756,9 @@ if check_password():
                 confidence = min(0.95, abs(q_values[action_idx]) / (np.sum(np.abs(q_values)) + 1e-8))
                 
                 # Boost confidence based on market context
-                if news_sentiment > 0.3 and action_idx == 1:  # Bullish news + Buy
+                if news_sentiment > 0.3 and action_idx == 1:
                     confidence = min(0.95, confidence * 1.2)
-                elif news_sentiment < -0.3 and action_idx == 2:  # Bearish news + Sell
+                elif news_sentiment < -0.3 and action_idx == 2:
                     confidence = min(0.95, confidence * 1.2)
                 
                 # Reduce confidence during high-impact events
@@ -824,7 +814,7 @@ if check_password():
                 profit_percent = (current_price - self.entry_price) * self.position / self.entry_price * 100
                 
                 # Calculate trade duration
-                trade_duration = (current_time - last_trade["entry_time"]).total_seconds() / 60  # minutes
+                trade_duration = (current_time - last_trade["entry_time"]).total_seconds() / 60
                 
                 last_trade.update({
                     "exit_time": current_time,
@@ -942,8 +932,8 @@ if check_password():
             }
 
     # Helper functions
-    def create_performance_chart(trades_history):
-        """Create cumulative performance chart"""
+    def create_simple_performance_chart(trades_history):
+        """Create simple performance chart using streamlit"""
         if not trades_history:
             return None
         
@@ -955,31 +945,7 @@ if check_password():
         df['cumulative_profit'] = df['profit_percent'].cumsum()
         df['trade_number'] = range(1, len(df) + 1)
         
-        fig = go.Figure()
-        
-        # Add cumulative profit line
-        fig.add_trace(go.Scatter(
-            x=df['trade_number'],
-            y=df['cumulative_profit'],
-            mode='lines+markers',
-            name='Cumulative Profit %',
-            line=dict(color='#00f260', width=3),
-            marker=dict(size=6)
-        ))
-        
-        # Add zero line
-        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.7)
-        
-        fig.update_layout(
-            title="📈 Cumulative Performance",
-            xaxis_title="Trade Number",
-            yaxis_title="Cumulative Profit (%)",
-            template="plotly_white",
-            height=400,
-            showlegend=True
-        )
-        
-        return fig
+        return df[['trade_number', 'cumulative_profit']]
 
     def show_enhanced_backup_status():
         """Show enhanced backup status"""
@@ -1009,7 +975,6 @@ if check_password():
             # Download backup
             if st.session_state.get('downloadable_backup'):
                 backup_data = st.session_state.downloadable_backup
-                b64 = base64.b64encode(backup_data.encode()).decode()
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"expert_bot_backup_{timestamp}.json"
                 
@@ -1019,6 +984,17 @@ if check_password():
                     file_name=filename,
                     mime="application/json"
                 )
+
+    def format_price(price, symbol):
+        """Format price based on symbol type"""
+        if symbol in ["EURUSD", "EURJPY", "USDJPY"]:
+            return f"{price:.5f}"
+        elif symbol == "XAUUSD":
+            return f"${price:.2f}"
+        elif symbol == "NAS":
+            return f"{price:.1f}"
+        else:
+            return f"{price:.4f}"
 
     # Initialize Expert RL Bot
     @st.cache_resource
@@ -1066,7 +1042,7 @@ if check_password():
             "📈 Trading Instrument",
             range(len(symbol_options)),
             format_func=lambda x: symbol_labels[x],
-            index=0  # Default to EURUSD
+            index=0
         )
         symbol = symbol_options[selected_index]
         symbol_info = SYMBOLS[symbol]
@@ -1092,7 +1068,7 @@ if check_password():
         
         if economic_events:
             st.markdown("**Today's Events:**")
-            for event in economic_events[:3]:  # Show top 3
+            for event in economic_events[:3]:
                 st.markdown(f"• {event.get('event', 'Unknown')}")
         
         # Enhanced backup system
@@ -1179,7 +1155,60 @@ if check_password():
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # Market Overview
+        st.markdown("## 📊 Market Overview")
         
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">Current Price</div>
+                <div class="metric-value">{format_price(current_price, symbol)}</div>
+                <div class="metric-change">Live Price</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            if 'high' in df.columns:
+                session_high = df['high'].max()
+            else:
+                session_high = current_price * 1.05
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">Session High</div>
+                <div class="metric-value">{format_price(session_high, symbol)}</div>
+                <div class="metric-change">Peak Value</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            if 'low' in df.columns:
+                session_low = df['low'].min()
+            else:
+                session_low = current_price * 0.95
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">Session Low</div>
+                <div class="metric-value">{format_price(session_low, symbol)}</div>
+                <div class="metric-change">Minimum Value</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            if 'volume' in df.columns:
+                current_volume = df['volume'].iloc[-1]
+            else:
+                current_volume = 1000000
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">Volume</div>
+                <div class="metric-value">{current_volume:,.0f}</div>
+                <div class="metric-change">Latest Period</div>
+            </div>
+            """, unsafe_allow_html=True)
+
         # Signal and Performance sections
         col_signal, col_chart = st.columns([1, 1])
         
@@ -1194,7 +1223,7 @@ if check_password():
                 </div>
                 <div style="margin-bottom: 1rem;">
                     <strong>Confidence:</strong> {confidence:.1%}<br>
-                    <strong>Price:</strong> {current_price:.5f}<br>
+                    <strong>Price:</strong> {format_price(current_price, symbol)}<br>
                     <strong>News Sentiment:</strong> {sentiment_text}<br>
                     <strong>Economic Events:</strong> {len(economic_events)}
                 </div>
@@ -1202,10 +1231,11 @@ if check_password():
             """, unsafe_allow_html=True)
         
         with col_chart:
-            # Performance chart
-            chart = create_performance_chart(rl_bot.trades_history)
-            if chart:
-                st.plotly_chart(chart, use_container_width=True)
+            # Simple performance chart
+            chart_data = create_simple_performance_chart(rl_bot.trades_history)
+            if chart_data is not None:
+                st.markdown("### 📈 Cumulative Performance")
+                st.line_chart(chart_data.set_index('trade_number')['cumulative_profit'])
             else:
                 st.info("📈 Performance chart will appear after trades")
         
@@ -1223,15 +1253,6 @@ if check_password():
                 if "exit_time" in df_display.columns:
                     df_display["exit_time"] = pd.to_datetime(df_display["exit_time"]).dt.strftime("%H:%M:%S")
                 
-                # Color-code profits/losses
-                def color_profit(val):
-                    if val > 0:
-                        return 'background-color: #d4edda; color: #155724'
-                    elif val < 0:
-                        return 'background-color: #f8d7da; color: #721c24'
-                    else:
-                        return ''
-                
                 # Select columns to display
                 display_cols = ["entry_time", "position", "entry_price", "confidence"]
                 if "exit_time" in df_display.columns:
@@ -1239,13 +1260,18 @@ if check_password():
                 
                 available_cols = [col for col in display_cols if col in df_display.columns]
                 
-                # Style the dataframe
-                styled_df = df_display[available_cols].tail(10).style.applymap(
-                    color_profit, 
-                    subset=['profit_percent'] if 'profit_percent' in available_cols else []
-                )
+                # Show recent trades
+                st.dataframe(df_display[available_cols].tail(10), use_container_width=True)
                 
-                st.dataframe(styled_df, use_container_width=True)
+                # Show profit/loss summary
+                profitable_trades = df_display[df_display["profit_percent"] > 0]
+                losing_trades = df_display[df_display["profit_percent"] <= 0]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.success(f"🟢 Profitable Trades: {len(profitable_trades)}")
+                with col2:
+                    st.error(f"🔴 Losing Trades: {len(losing_trades)}")
         else:
             st.info("No trades executed yet. The expert bot is analyzing market conditions.")
         
@@ -1277,6 +1303,7 @@ if check_password():
                 - Total Profit: {performance['total_profit']:.2f}%
                 - Best Trade: {performance['best_trade']:.2f}%
                 - Worst Trade: {performance['worst_trade']:.2f}%
+                - Total Pips: {performance['total_pips']:.1f}
                 """)
         
         with col_train3:
@@ -1312,6 +1339,7 @@ if check_password():
             <span class="status-expert status-live">🧠 {performance['total_trades']} Trades</span>
             <span class="status-expert status-live">💰 {performance['total_profit']:.1f}% Profit</span>
             <span class="status-expert status-live">🎯 {performance['win_rate']:.1%} Win Rate</span>
+            <span class="status-expert status-live">📊 {performance['total_pips']:.1f} Pips</span>
         </div>
         <div style="margin-top: 1rem; font-size: 0.9rem; opacity: 0.9;">
             Expert RL Trading Bot • Enhanced Backup System • Market Intelligence • Last Update: {current_time}
